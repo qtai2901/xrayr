@@ -238,30 +238,30 @@ func (c *APIClient) GetUserList() (UserList *[]api.UserInfo, err error) {
 
 // ReportNodeOnlineUsers reports online user ip
 func (c *APIClient) ReportNodeOnlineUsers(onlineUserList *[]api.OnlineUser) error {
-	var path string
-	switch c.NodeType {
-	case "V2ray":
-		path = "/api/v1/server/Deepbwork/user"
-	case "Trojan":
-		path = "/api/v1/server/TrojanTidalab/user"
-	case "Shadowsocks":
-		path = "/api/v1/server/ShadowsocksTidalab/user"
-	default:
-		return nil, fmt.Errorf("unsupported Node type: %s", c.NodeType)
-	}
+	c.access.Lock()
+	defer c.access.Unlock()
+
+	reportOnline := make(map[int]int)
 	data := make([]OnlineUser, len(*onlineUserList))
 	for i, user := range *onlineUserList {
 		data[i] = OnlineUser{UID: user.UID, IP: user.IP}
+		if _, ok := reportOnline[user.UID]; ok {
+			reportOnline[user.UID]++
+		} else {
+			reportOnline[user.UID] = 1
+		}
 	}
-	postData := &PostData{Type: nodeType, NodeId: c.NodeID, Onlines: data}
-	path := "/api/online"
+	c.LastReportOnline = reportOnline // Update LastReportOnline
 
+	postData := &PostData{Data: data}
+	path := fmt.Sprintf("/mod_mu/users/aliveip")
 	res, err := c.client.R().
-		SetHeader("Content-Type", "application/json").
+		SetQueryParam("node_id", strconv.Itoa(c.NodeID)).
 		SetBody(postData).
 		SetResult(&Response{}).
 		ForceContentType("application/json").
 		Post(path)
+
 	_, err = c.parseResponse(res, path, err)
 	if err != nil {
 		return err
