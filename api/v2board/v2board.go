@@ -236,6 +236,40 @@ func (c *APIClient) GetUserList() (UserList *[]api.UserInfo, err error) {
 	return &userList, nil
 }
 
+// ReportNodeOnlineUsers reports online user ip
+func (c *APIClient) ReportNodeOnlineUsers(onlineUserList *[]api.OnlineUser) error {
+	var nodeType = ""
+	switch c.NodeType {
+	case "Shadowsocks":
+		nodeType = "ss"
+	case "V2ray":
+		nodeType = "v2ray"
+	case "Trojan":
+		nodeType = "trojan"
+	default:
+		return fmt.Errorf("NodeType Error: %s", c.NodeType)
+	}
+	data := make([]OnlineUser, len(*onlineUserList))
+	for i, user := range *onlineUserList {
+		data[i] = OnlineUser{UID: user.UID, IP: user.IP}
+	}
+	postData := &PostData{Type: nodeType, NodeId: c.NodeID, Onlines: data}
+	path := "/api/online"
+
+	res, err := c.client.R().
+		SetHeader("Content-Type", "application/json").
+		SetBody(postData).
+		SetResult(&Response{}).
+		ForceContentType("application/json").
+		Post(path)
+	_, err = c.parseResponse(res, path, err)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 // ReportUserTraffic reports the user traffic
 func (c *APIClient) ReportUserTraffic(userTraffic *[]api.UserTraffic) error {
 	var path string
