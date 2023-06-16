@@ -238,16 +238,16 @@ func (c *APIClient) GetUserList() (UserList *[]api.UserInfo, err error) {
 
 // ReportNodeOnlineUsers reports online user ip
 func (c *APIClient) ReportNodeOnlineUsers(onlineUserList *[]api.OnlineUser) error {
-	var nodeType = ""
+	var path string
 	switch c.NodeType {
-	case "Shadowsocks":
-		nodeType = "ss"
 	case "V2ray":
-		nodeType = "v2ray"
+		path = "/api/v1/server/Deepbwork/user"
 	case "Trojan":
-		nodeType = "trojan"
+		path = "/api/v1/server/TrojanTidalab/user"
+	case "Shadowsocks":
+		path = "/api/v1/server/ShadowsocksTidalab/user"
 	default:
-		return fmt.Errorf("NodeType Error: %s", c.NodeType)
+		return nil, fmt.Errorf("unsupported Node type: %s", c.NodeType)
 	}
 	data := make([]OnlineUser, len(*onlineUserList))
 	for i, user := range *onlineUserList {
