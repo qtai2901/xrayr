@@ -237,31 +237,30 @@ func (c *APIClient) GetUserList() (UserList *[]api.UserInfo, err error) {
 }
 
 // ReportNodeOnlineUsers reports online user ip
+// ReportNodeOnlineUsers reports online user ip
 func (c *APIClient) ReportNodeOnlineUsers(onlineUserList *[]api.OnlineUser) error {
-	c.access.Lock()
-	defer c.access.Unlock()
-
-	reportOnline := make(map[int]int)
+	var path string
+	switch c.NodeType {
+	case "V2ray":
+		path = "/api/v1/server/Deepbwork/online"
+	case "Trojan":
+		path = "/api/v1/server/TrojanTidalab/online"
+	case "Shadowsocks":
+		path = "/api/v1/server/ShadowsocksTidalab/online"
+	}
 	data := make([]OnlineUser, len(*onlineUserList))
 	for i, user := range *onlineUserList {
 		data[i] = OnlineUser{UID: user.UID, IP: user.IP}
-		if _, ok := reportOnline[user.UID]; ok {
-			reportOnline[user.UID]++
-		} else {
-			reportOnline[user.UID] = 1
-		}
 	}
-	c.LastReportOnline = reportOnline // Update LastReportOnline
+	postData := &PostData{Type: nodeType, NodeId: c.NodeID, Onlines: data}
+	path := "/api/online"
 
-	postData := &PostData{Data: data}
-	path := fmt.Sprintf("/mod_mu/users/aliveip")
 	res, err := c.client.R().
-		SetQueryParam("node_id", strconv.Itoa(c.NodeID)).
+		SetHeader("Content-Type", "application/json").
 		SetBody(postData).
 		SetResult(&Response{}).
 		ForceContentType("application/json").
 		Post(path)
-
 	_, err = c.parseResponse(res, path, err)
 	if err != nil {
 		return err
