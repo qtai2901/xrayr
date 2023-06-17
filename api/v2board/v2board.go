@@ -1,23 +1,25 @@
-
-package pmpanel
+package v2board
 
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
-	"reflect"
 	"regexp"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
+	"github.com/bitly/go-simplejson"
 	"github.com/go-resty/resty/v2"
 
 	"github.com/XrayR-project/XrayR/api"
 )
 
-// APIClient create a api client to the panel.
+// APIClient create an api client to the panel.
 type APIClient struct {
 	client        *resty.Client
 	APIHost       string
@@ -29,9 +31,11 @@ type APIClient struct {
 	SpeedLimit    float64
 	DeviceLimit   int
 	LocalRuleList []api.DetectRule
+	ConfigResp    *simplejson.Json
+	access        sync.Mutex
 }
 
-// New creat a api instance
+// New create an api instance
 func New(apiConfig *api.Config) *APIClient {
 
 	client := resty.New()
@@ -50,8 +54,9 @@ func New(apiConfig *api.Config) *APIClient {
 	})
 	client.SetBaseURL(apiConfig.APIHost)
 	// Create Key for each requests
-	client.SetHeaders(map[string]string{
-		"key": apiConfig.Key,
+	client.SetQueryParams(map[string]string{
+		"node_id": strconv.Itoa(apiConfig.NodeID),
+		"token":   apiConfig.Key,
 	})
 	// Read local rule list
 	localRuleList := readLocalRuleList(apiConfig.RuleListPath)
@@ -119,7 +124,7 @@ func (c *APIClient) assembleURL(path string) string {
 	return c.APIHost + path
 }
 
-func (c *APIClient) parseResponse(res *resty.Response, path string, err error) (*Response, error) {
+func (c *APIClient) parseResponse(res *resty.Response, path string, err error) (*simplejson.Json, error) {
 	if err != nil {
 		return nil, fmt.Errorf("request %s failed: %s", c.assembleURL(path), err)
 	}
@@ -128,62 +133,56 @@ func (c *APIClient) parseResponse(res *resty.Response, path string, err error) (
 		body := res.Body()
 		return nil, fmt.Errorf("request %s failed: %s, %s", c.assembleURL(path), string(body), err)
 	}
-	response := res.Result().(*Response)
-
-	if response.Ret != 200 {
-		res, _ := json.Marshal(&response)
-		return nil, fmt.Errorf("ret %s invalid", string(res))
+	rtn, err := simplejson.NewJson(res.Body())
+	if err != nil {
+		return nil, fmt.Errorf("ret %s invalid", res.String())
 	}
-	return response, nil
+	return rtn, nil
 }
 
 // GetNodeInfo will pull NodeInfo Config from sspanel
 func (c *APIClient) GetNodeInfo() (nodeInfo *api.NodeInfo, err error) {
-	path := fmt.Sprintf("/api/node")
-	var nodeType = ""
+	var path string
 	switch c.NodeType {
-	case "Shadowsocks":
-		nodeType = "ss"
 	case "V2ray":
-		nodeType = "v2ray"
+		path = "/api/v1/server/Deepbwork/config"
 	case "Trojan":
-		nodeType = "trojan"
+		path = "/api/v1/server/TrojanTidalab/config"
+	case "Shadowsocks":
+		if nodeInfo, err = c.ParseSSNodeResponse(); err == nil {
+			return nodeInfo, nil
+		} else {
+			return nil, err
+		}
 	default:
-		return nil, fmt.Errorf("NodeType Error: %s", c.NodeType)
+		return nil, fmt.Errorf("unsupported Node type: %s", c.NodeType)
 	}
-	// body := fmt.Sprintf(`{"type":"%s", "nodeId":%d}`, nodeType, c.NodeID)
 	res, err := c.client.R().
-		SetQueryParams(map[string]string{
-			"type":   nodeType,
-			"nodeId": strconv.Itoa(c.NodeID),
-		}).
-		SetResult(&Response{}).
+		SetQueryParam("local_port", "1").
 		ForceContentType("application/json").
 		Get(path)
 
 	response, err := c.parseResponse(res, path, err)
+	c.access.Lock()
+	defer c.access.Unlock()
+	c.ConfigResp = response
 	if err != nil {
 		return nil, err
 	}
 
-	nodeInfoResponse := new(NodeInfoResponse)
-
-	if err := json.Unmarshal(response.Data, nodeInfoResponse); err != nil {
-		return nil, fmt.Errorf("unmarshal %s failed: %s", reflect.TypeOf(nodeInfoResponse), err)
-	}
 	switch c.NodeType {
 	case "V2ray":
-		nodeInfo, err = c.ParseV2rayNodeResponse(nodeInfoResponse)
+		nodeInfo, err = c.ParseV2rayNodeResponse(response)
 	case "Trojan":
-		nodeInfo, err = c.ParseTrojanNodeResponse(nodeInfoResponse)
+		nodeInfo, err = c.ParseTrojanNodeResponse(response)
 	case "Shadowsocks":
-		nodeInfo, err = c.ParseSSNodeResponse(nodeInfoResponse)
+		nodeInfo, err = c.ParseSSNodeResponse()
 	default:
 		return nil, fmt.Errorf("unsupported Node type: %s", c.NodeType)
 	}
 
 	if err != nil {
-		res, _ := json.Marshal(nodeInfoResponse)
+		res, _ := response.MarshalJSON()
 		return nil, fmt.Errorf("Parse node info failed: %s, \nError: %s", string(res), err)
 	}
 
@@ -192,25 +191,18 @@ func (c *APIClient) GetNodeInfo() (nodeInfo *api.NodeInfo, err error) {
 
 // GetUserList will pull user form sspanel
 func (c *APIClient) GetUserList() (UserList *[]api.UserInfo, err error) {
-	path := "/api/users"
-	var nodeType = ""
+	var path string
 	switch c.NodeType {
-	case "Shadowsocks":
-		nodeType = "ss"
 	case "V2ray":
-		nodeType = "v2ray"
+		path = "/api/v1/server/Deepbwork/user"
 	case "Trojan":
-		nodeType = "trojan"
+		path = "/api/v1/server/TrojanTidalab/user"
+	case "Shadowsocks":
+		path = "/api/v1/server/ShadowsocksTidalab/user"
 	default:
-		return nil, fmt.Errorf("NodeType Error: %s", c.NodeType)
+		return nil, fmt.Errorf("unsupported Node type: %s", c.NodeType)
 	}
 	res, err := c.client.R().
-		SetQueryParams(map[string]string{
-			"type":   nodeType,
-			"nodeId": strconv.Itoa(c.NodeID),
-			"all":    "true",
-		}).
-		SetResult(&Response{}).
 		ForceContentType("application/json").
 		Get(path)
 
@@ -218,181 +210,198 @@ func (c *APIClient) GetUserList() (UserList *[]api.UserInfo, err error) {
 	if err != nil {
 		return nil, err
 	}
-
-	var userListResponse *[]UserResponse
-	if err := json.Unmarshal(response.Data, &userListResponse); err != nil {
-		return nil, fmt.Errorf("unmarshal %s failed: %s", reflect.TypeOf(userListResponse), err)
+	numOfUsers := len(response.Get("data").MustArray())
+	userList := make([]api.UserInfo, numOfUsers)
+	for i := 0; i < numOfUsers; i++ {
+		user := api.UserInfo{}
+		user.UID = response.Get("data").GetIndex(i).Get("id").MustInt()
+		user.SpeedLimit = uint64(c.SpeedLimit * 1000000 / 8)
+		user.DeviceLimit = c.DeviceLimit
+		switch c.NodeType {
+		case "Shadowsocks":
+			user.Email = response.Get("data").GetIndex(i).Get("secret").MustString()
+			user.Passwd = response.Get("data").GetIndex(i).Get("secret").MustString()
+			user.Method = response.Get("data").GetIndex(i).Get("cipher").MustString()
+			user.Port = uint32(response.Get("data").GetIndex(i).Get("port").MustUint64())
+		case "Trojan":
+			user.UUID = response.Get("data").GetIndex(i).Get("trojan_user").Get("password").MustString()
+			user.Email = response.Get("data").GetIndex(i).Get("trojan_user").Get("password").MustString()
+		case "V2ray":
+			user.UUID = response.Get("data").GetIndex(i).Get("v2ray_user").Get("uuid").MustString()
+			user.Email = response.Get("data").GetIndex(i).Get("v2ray_user").Get("email").MustString()
+			user.AlterID = uint16(response.Get("data").GetIndex(i).Get("v2ray_user").Get("alter_id").MustUint64())
+		}
+		userList[i] = user
 	}
-	userList, err := c.ParseUserListResponse(userListResponse)
-	if err != nil {
-		res, _ := json.Marshal(userListResponse)
-		return nil, fmt.Errorf("parse user list failed: %s", string(res))
-	}
-	return userList, nil
-}
-
-// ReportNodeStatus reports the node status to the sspanel
-func (c *APIClient) ReportNodeStatus(nodeStatus *api.NodeStatus) (err error) {
-	return nil
-}
-
-// ReportNodeOnlineUsers reports online user ip
-func (c *APIClient) ReportNodeOnlineUsers(onlineUserList *[]api.OnlineUser) error {
-	var nodeType = ""
-	switch c.NodeType {
-	case "Shadowsocks":
-		nodeType = "ss"
-	case "V2ray":
-		nodeType = "v2ray"
-	case "Trojan":
-		nodeType = "trojan"
-	default:
-		return fmt.Errorf("NodeType Error: %s", c.NodeType)
-	}
-	data := make([]OnlineUser, len(*onlineUserList))
-	for i, user := range *onlineUserList {
-		data[i] = OnlineUser{UID: user.UID, IP: user.IP}
-	}
-	postData := &PostData{Type: nodeType, NodeId: c.NodeID, Onlines: data}
-	path := "/api/online"
-
-	res, err := c.client.R().
-		SetHeader("Content-Type", "application/json").
-		SetBody(postData).
-		SetResult(&Response{}).
-		ForceContentType("application/json").
-		Post(path)
-	_, err = c.parseResponse(res, path, err)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return &userList, nil
 }
 
 // ReportUserTraffic reports the user traffic
 func (c *APIClient) ReportUserTraffic(userTraffic *[]api.UserTraffic) error {
-	var nodeType = ""
+	var path string
 	switch c.NodeType {
-	case "Shadowsocks":
-		nodeType = "ss"
 	case "V2ray":
-		nodeType = "v2ray"
+		path = "/api/v1/server/Deepbwork/submit"
 	case "Trojan":
-		nodeType = "trojan"
-	default:
-		return fmt.Errorf("NodeType Error: %s", c.NodeType)
+		path = "/api/v1/server/TrojanTidalab/submit"
+	case "Shadowsocks":
+		path = "/api/v1/server/ShadowsocksTidalab/submit"
 	}
+
 	data := make([]UserTraffic, len(*userTraffic))
 	for i, traffic := range *userTraffic {
 		data[i] = UserTraffic{
 			UID:      traffic.UID,
 			Upload:   traffic.Upload,
-			Download: traffic.Download,
-		}
+			Download: traffic.Download}
 	}
-	postData := &PostData{Type: nodeType, NodeId: c.NodeID, Users: data}
-	path := "/api/traffic"
 
 	res, err := c.client.R().
-		SetHeader("Content-Type", "application/json").
-		SetBody(postData).
-		SetResult(&Response{}).
+		SetQueryParam("node_id", strconv.Itoa(c.NodeID)).
+		SetBody(data).
 		ForceContentType("application/json").
 		Post(path)
 	_, err = c.parseResponse(res, path, err)
 	if err != nil {
 		return err
 	}
-
 	return nil
 }
 
-// GetNodeRule will pull the audit rule form pmpanel
+// GetNodeRule implements the API interface
 func (c *APIClient) GetNodeRule() (*[]api.DetectRule, error) {
 	ruleList := c.LocalRuleList
-	path := "/api/rules"
-	var nodeType = ""
-	switch c.NodeType {
-	case "Shadowsocks":
-		nodeType = "ss"
-	case "V2ray":
-		nodeType = "v2ray"
-	case "Trojan":
-		nodeType = "trojan"
-	default:
-		return nil, fmt.Errorf("NodeType Error: %s", c.NodeType)
-	}
-	res, err := c.client.R().
-		SetQueryParams(map[string]string{
-			"type":   nodeType,
-			"nodeId": strconv.Itoa(c.NodeID),
-		}).
-		SetResult(&Response{}).
-		ForceContentType("application/json").
-		Get(path)
-
-	response, err := c.parseResponse(res, path, err)
-	if err != nil {
-		return nil, err
+	if c.NodeType != "V2ray" {
+		return &ruleList, nil
 	}
 
-	ruleListResponse := new([]RuleItem)
-
-	if err := json.Unmarshal(response.Data, ruleListResponse); err != nil {
-		return nil, fmt.Errorf("unmarshal %s failed: %s", reflect.TypeOf(ruleListResponse), err)
-	}
-
-	for _, r := range *ruleListResponse {
-		ruleList = append(ruleList, api.DetectRule{
-			ID:      r.ID,
-			Pattern: regexp.MustCompile(r.Content),
-		})
+	// V2board only support the rule for v2ray
+	// fix: reuse config response
+	c.access.Lock()
+	defer c.access.Unlock()
+	ruleListResponse := c.ConfigResp.Get("routing").Get("rules").GetIndex(1).Get("domain").MustStringArray()
+	for i, rule := range ruleListResponse {
+		rule = strings.TrimPrefix(rule, "regexp:")
+		ruleListItem := api.DetectRule{
+			ID:      i,
+			Pattern: regexp.MustCompile(rule),
+		}
+		ruleList = append(ruleList, ruleListItem)
 	}
 	return &ruleList, nil
 }
 
-// ReportIllegal reports the user illegal behaviors
+// ReportNodeStatus implements the API interface
+func (c *APIClient) ReportNodeStatus(nodeStatus *api.NodeStatus) (err error) {
+	return nil
+}
+
+// ReportNodeOnlineUsers implements the API interface
+func (c *APIClient) ReportNodeOnlineUsers(onlineUserList *[]api.OnlineUser) error {
+	return nil
+}
+
+// ReportIllegal implements the API interface
 func (c *APIClient) ReportIllegal(detectResultList *[]api.DetectResult) error {
 	return nil
 }
 
-// ParseV2rayNodeResponse parse the response for the given nodeinfor format
-func (c *APIClient) ParseV2rayNodeResponse(nodeInfoResponse *NodeInfoResponse) (*api.NodeInfo, error) {
-	var enableTLS bool
-	var path, host, transportProtocol, serviceName string
-	var speedLimit uint64 = 0
+// ParseTrojanNodeResponse parse the response for the given nodeinfor format
+func (c *APIClient) ParseTrojanNodeResponse(nodeInfoResponse *simplejson.Json) (*api.NodeInfo, error) {
+	port := uint32(nodeInfoResponse.Get("local_port").MustUint64())
+	host := nodeInfoResponse.Get("ssl").Get("sni").MustString()
 
-	port := nodeInfoResponse.Port
-	alterID := nodeInfoResponse.AlterId
-	transportProtocol = nodeInfoResponse.Network
-	switch transportProtocol {
-	case "ws":
-		host = nodeInfoResponse.Host
-		path = nodeInfoResponse.Path
-	case "grpc":
-		serviceName = nodeInfoResponse.Sni
-	case "tcp":
-		// TODO
-	}
-	// Compatible with more node types config
-	switch nodeInfoResponse.Security {
-	case "tls":
-		enableTLS = true
-	default:
-		enableTLS = false
-	}
-	if c.SpeedLimit > 0 {
-		speedLimit = uint64((c.SpeedLimit * 1000000) / 8)
-	} else {
-		speedLimit = uint64((nodeInfoResponse.SpeedLimit * 1000000) / 8)
-	}
 	// Create GeneralNodeInfo
 	nodeinfo := &api.NodeInfo{
 		NodeType:          c.NodeType,
 		NodeID:            c.NodeID,
 		Port:              port,
-		SpeedLimit:        speedLimit,
+		TransportProtocol: "tcp",
+		EnableTLS:         true,
+		Host:              host,
+	}
+	return nodeinfo, nil
+}
+
+// ParseSSNodeResponse parse the response for the given nodeinfor format
+func (c *APIClient) ParseSSNodeResponse() (*api.NodeInfo, error) {
+	var port uint32
+	var method string
+	userInfo, err := c.GetUserList()
+	if err != nil {
+		return nil, err
+	}
+	if len(*userInfo) > 0 {
+		port = (*userInfo)[0].Port
+		method = (*userInfo)[0].Method
+	} else {
+		return nil, errors.New("the number of node users is 0")
+	}
+
+	// Create GeneralNodeInfo
+	nodeInfo := &api.NodeInfo{
+		NodeType:          c.NodeType,
+		NodeID:            c.NodeID,
+		Port:              port,
+		TransportProtocol: "tcp",
+		CypherMethod:      method,
+	}
+
+	return nodeInfo, nil
+}
+
+// ParseV2rayNodeResponse parse the response for the given nodeinfor format
+func (c *APIClient) ParseV2rayNodeResponse(nodeInfoResponse *simplejson.Json) (*api.NodeInfo, error) {
+	var path, host, serviceName string
+	var header json.RawMessage
+	var enableTLS bool
+	var alterID uint16 = 0
+
+	inboundInfo := simplejson.New()
+	if tmpInboundInfo, ok := nodeInfoResponse.CheckGet("inbound"); ok {
+		inboundInfo = tmpInboundInfo
+		// Compatible with v2board 1.5.5-dev
+	} else if tmpInboundInfo, ok := nodeInfoResponse.CheckGet("inbounds"); ok {
+		tmpInboundInfo := tmpInboundInfo.MustArray()
+		marshalByte, _ := json.Marshal(tmpInboundInfo[0].(map[string]interface{}))
+		inboundInfo, _ = simplejson.NewJson(marshalByte)
+	} else {
+		return nil, fmt.Errorf("unable to find inbound(s) in the nodeInfo")
+	}
+
+	port := uint32(inboundInfo.Get("port").MustUint64())
+	transportProtocol := inboundInfo.Get("streamSettings").Get("network").MustString()
+
+	switch transportProtocol {
+	case "ws":
+		path = inboundInfo.Get("streamSettings").Get("wsSettings").Get("path").MustString()
+		host = inboundInfo.Get("streamSettings").Get("wsSettings").Get("headers").Get("Host").MustString()
+	case "grpc":
+		if data, ok := inboundInfo.Get("streamSettings").Get("grpcSettings").CheckGet("serviceName"); ok {
+			serviceName = data.MustString()
+		}
+	case "tcp":
+		if data, ok := inboundInfo.Get("streamSettings").Get("tcpSettings").CheckGet("header"); ok {
+			if httpHeader, err := data.MarshalJSON(); err != nil {
+				return nil, err
+			} else {
+				header = httpHeader
+			}
+		}
+
+	}
+	if inboundInfo.Get("streamSettings").Get("security").MustString() == "tls" {
+		enableTLS = true
+	} else {
+		enableTLS = false
+	}
+
+	// Create GeneralNodeInfo
+	// AlterID will be updated after next sync
+	nodeInfo := &api.NodeInfo{
+		NodeType:          c.NodeType,
+		NodeID:            c.NodeID,
+		Port:              port,
 		AlterID:           alterID,
 		TransportProtocol: transportProtocol,
 		EnableTLS:         enableTLS,
@@ -401,90 +410,7 @@ func (c *APIClient) ParseV2rayNodeResponse(nodeInfoResponse *NodeInfoResponse) (
 		EnableVless:       c.EnableVless,
 		VlessFlow:         c.VlessFlow,
 		ServiceName:       serviceName,
+		Header:            header,
 	}
-
-	return nodeinfo, nil
-}
-
-// ParseSSNodeResponse parse the response for the given nodeinfor format
-func (c *APIClient) ParseSSNodeResponse(nodeInfoResponse *NodeInfoResponse) (*api.NodeInfo, error) {
-	var speedLimit uint64 = 0
-
-	if c.SpeedLimit > 0 {
-		speedLimit = uint64((c.SpeedLimit * 1000000) / 8)
-	} else {
-		speedLimit = uint64((nodeInfoResponse.SpeedLimit * 1000000) / 8)
-	}
-	// Create GeneralNodeInfo
-	nodeInfo := &api.NodeInfo{
-		NodeType:          c.NodeType,
-		NodeID:            c.NodeID,
-		Port:              nodeInfoResponse.Port,
-		SpeedLimit:        speedLimit,
-		TransportProtocol: "tcp",
-		CypherMethod:      nodeInfoResponse.Method,
-	}
-
 	return nodeInfo, nil
-}
-
-// ParseTrojanNodeResponse parse the response for the given nodeinfor format
-func (c *APIClient) ParseTrojanNodeResponse(nodeInfoResponse *NodeInfoResponse) (*api.NodeInfo, error) {
-	// 域名或IP;port=连接端口#偏移端口|host=xx
-	// gz.aaa.com;port=443#12345|host=hk.aaa.com
-	var host string
-	var transportProtocol = "tcp"
-	var speedlimit uint64 = 0
-	host = nodeInfoResponse.Host
-	port := nodeInfoResponse.Port
-
-	if c.SpeedLimit > 0 {
-		speedlimit = uint64((c.SpeedLimit * 1000000) / 8)
-	} else {
-		speedlimit = uint64((nodeInfoResponse.SpeedLimit * 1000000) / 8)
-	}
-	if nodeInfoResponse.Grpc {
-		transportProtocol = "grpc"
-	}
-	// Create GeneralNodeInfo
-	nodeInfo := &api.NodeInfo{
-		NodeType:          c.NodeType,
-		NodeID:            c.NodeID,
-		Port:              port,
-		SpeedLimit:        speedlimit,
-		TransportProtocol: transportProtocol,
-		EnableTLS:         true,
-		Host:              host,
-		ServiceName:       nodeInfoResponse.Sni,
-	}
-
-	return nodeInfo, nil
-}
-
-// ParseUserListResponse parse the response for the given nodeinfo format
-func (c *APIClient) ParseUserListResponse(userInfoResponse *[]UserResponse) (*[]api.UserInfo, error) {
-	var deviceLimit = 0
-	var speedLimit uint64 = 0
-	userList := make([]api.UserInfo, len(*userInfoResponse))
-	for i, user := range *userInfoResponse {
-		if c.DeviceLimit > 0 {
-			deviceLimit = c.DeviceLimit
-		} else {
-			deviceLimit = user.DeviceLimit
-		}
-		if c.SpeedLimit > 0 {
-			speedLimit = uint64((c.SpeedLimit * 1000000) / 8)
-		} else {
-			speedLimit = uint64((user.SpeedLimit * 1000000) / 8)
-		}
-		userList[i] = api.UserInfo{
-			UID:         user.ID,
-			Passwd:      user.Passwd,
-			UUID:        user.Passwd,
-			SpeedLimit:  speedLimit,
-			DeviceLimit: deviceLimit,
-		}
-	}
-
-	return &userList, nil
 }
