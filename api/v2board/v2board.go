@@ -252,7 +252,7 @@ func (c *APIClient) ReportNodeOnlineUsers(onlineUserList *[]api.OnlineUser) erro
 		data[i] = OnlineUser{UID: user.UID, IP: user.IP}
 	}
 	postData := &PostData{Type: nodeType, NodeId: c.NodeID, Onlines: data}
-	path := "/api/online"
+	
 
 	res, err := c.client.R().
 		SetHeader("Content-Type", "application/json").
