@@ -245,7 +245,7 @@ func (c *APIClient) GetUserList() (UserList *[]api.UserInfo, err error) {
 // ReportUserTraffic reports the user traffic
 func (c *APIClient) ReportUserTraffic(userTraffic *[]api.UserTraffic) error {
 	path := "/api/v1/server/UniProxy/push"
-
+	
 	// json structure: {uid1: [u, d], uid2: [u, d], uid1: [u, d], uid3: [u, d]}
 	data := make(map[int][]int64, len(*userTraffic))
 	for _, traffic := range *userTraffic {
@@ -284,8 +284,33 @@ func (c *APIClient) ReportNodeStatus(nodeStatus *api.NodeStatus) (err error) {
 	return nil
 }
 
-// ReportNodeOnlineUsers implements the API interface
+// ReportNodeOnlineUsers reports online user ip
 func (c *APIClient) ReportNodeOnlineUsers(onlineUserList *[]api.OnlineUser) error {
+	path := "/api/v1/server/UniProxy/online"
+	switch c.NodeType {
+	case "V2ray", "Trojan", "Shadowsocks":
+		break
+	default:
+		return nil, fmt.Errorf("unsupported node type: %s", c.NodeType)
+	}
+	data := make([]OnlineUser, len(*onlineUserList))
+	for i, user := range *onlineUserList {
+		data[i] = OnlineUser{UID: user.UID, IP: user.IP}
+	}
+	postData := &PostData{Type: nodeType, NodeId: c.NodeID, Onlines: data}
+
+
+	res, err := c.client.R().
+		SetHeader("Content-Type", "application/json").
+		SetBody(postData).
+		SetResult(&Response{}).
+		ForceContentType("application/json").
+		Post(path)
+	_, err = c.parseResponse(res, path, err)
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 
