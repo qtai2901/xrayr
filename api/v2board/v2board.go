@@ -68,6 +68,7 @@ func New(apiConfig *api.Config) *APIClient {
 		NodeType:      apiConfig.NodeType,
 		EnableVless:   apiConfig.EnableVless,
 		VlessFlow:     apiConfig.VlessFlow,
+		SpeedLimit:    apiConfig.SpeedLimit,
 		DeviceLimit:   apiConfig.DeviceLimit,
 		LocalRuleList: localRuleList,
 	}
@@ -191,9 +192,13 @@ func (c *APIClient) GetNodeInfo() (nodeInfo *api.NodeInfo, err error) {
 
 // GetUserList will pull user form sspanel
 func (c *APIClient) GetUserList() (UserList *[]api.UserInfo, err error) {
+	var users []*user
+	
 	var path string
 	switch c.NodeType {
 	case "V2ray":
+		path = "/api/v1/server/Deepbwork/user"
+	case "Vless":
 		path = "/api/v1/server/Deepbwork/user"
 	case "Trojan":
 		path = "/api/v1/server/TrojanTidalab/user"
@@ -202,39 +207,52 @@ func (c *APIClient) GetUserList() (UserList *[]api.UserInfo, err error) {
 	default:
 		return nil, fmt.Errorf("unsupported Node type: %s", c.NodeType)
 	}
+
 	res, err := c.client.R().
+		SetHeader("If-None-Match", c.eTags["users"]).
 		ForceContentType("application/json").
 		Get(path)
 
-	response, err := c.parseResponse(res, path, err)
+	// Etag identifier for a specific version of a resource. StatusCode = 304 means no changed
+	if res.StatusCode() == 304 {
+		return nil, errors.New(api.UserNotModified)
+	}
+	// update etag
+	if res.Header().Get("Etag") != "" && res.Header().Get("Etag") != c.eTags["users"] {
+		c.eTags["users"] = res.Header().Get("Etag")
+	}
+
+	usersResp, err := c.parseResponse(res, path, err)
 	if err != nil {
 		return nil, err
 	}
-	numOfUsers := len(response.Get("data").MustArray())
-	userList := make([]api.UserInfo, numOfUsers)
-	for i := 0; i < numOfUsers; i++ {
-		user := api.UserInfo{}
-		user.UID = response.Get("data").GetIndex(i).Get("id").MustInt()
-		
-		
-		
-		user.DeviceLimit = c.DeviceLimit
-		switch c.NodeType {
-		case "Shadowsocks":
-			user.Email = response.Get("data").GetIndex(i).Get("secret").MustString()
-			user.Passwd = response.Get("data").GetIndex(i).Get("secret").MustString()
-			user.Method = response.Get("data").GetIndex(i).Get("cipher").MustString()
-			user.Port = response.Get("data").GetIndex(i).Get("port").MustInt()
-		case "Trojan":
-			user.UUID = response.Get("data").GetIndex(i).Get("trojan_user").Get("password").MustString()
-			user.Email = response.Get("data").GetIndex(i).Get("trojan_user").Get("password").MustString()
-		case "V2ray":
-			user.UUID = response.Get("data").GetIndex(i).Get("v2ray_user").Get("uuid").MustString()
-			user.Email = response.Get("data").GetIndex(i).Get("v2ray_user").Get("email").MustString()
-			user.AlterID = response.Get("data").GetIndex(i).Get("v2ray_user").Get("alter_id").MustInt()
-		}
-		userList[i] = user
+	b, _ := usersResp.Get("users").Encode()
+	json.Unmarshal(b, &users)
+	if len(users) == 0 {
+		return nil, errors.New("users is null")
 	}
+
+	userList := make([]api.UserInfo, len(users))
+	for i := 0; i < len(users); i++ {
+		u := api.UserInfo{
+			UID:  users[i].Id,
+			UUID: users[i].Uuid,
+		}
+
+		if c.SpeedLimit > 0 {
+			u.SpeedLimit = uint64(c.SpeedLimit * 1000000 / 8)
+		} else {
+			u.SpeedLimit = uint64(users[i].SpeedLimit * 1000000 / 8)
+		}
+
+		u.DeviceLimit = c.DeviceLimit // todo waiting v2board send configuration
+		u.Email = u.UUID + "@v2board.user"
+		if c.NodeType == "Shadowsocks" {
+			u.Passwd = u.UUID
+		}
+		userList[i] = u
+	}
+
 	return &userList, nil
 }
 
