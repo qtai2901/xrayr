@@ -68,7 +68,6 @@ func New(apiConfig *api.Config) *APIClient {
 		NodeType:      apiConfig.NodeType,
 		EnableVless:   apiConfig.EnableVless,
 		VlessFlow:     apiConfig.VlessFlow,
-		SpeedLimit:    apiConfig.SpeedLimit,
 		DeviceLimit:   apiConfig.DeviceLimit,
 		LocalRuleList: localRuleList,
 	}
