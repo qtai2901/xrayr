@@ -220,7 +220,8 @@ func (c *APIClient) GetUserList() (UserList *[]api.UserInfo, err error) {
 		if c.SpeedLimit > 0 {
 			u.SpeedLimit = uint64(c.SpeedLimit * 1000000 / 8)
 		} else {
-			u.SpeedLimit = uint64(response.Get("data").GetIndex(i).Get("speed_limit").MustInt() * 1000000 / 8)
+			c.SpeedLimit = response.Get("data").GetIndex(i).Get("speed_limit").MustInt()
+			u.SpeedLimit = uint64(c.SpeedLimit * 1000000 / 8)
 		}
 		
 		user.DeviceLimit = c.DeviceLimit
