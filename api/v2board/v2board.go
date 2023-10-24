@@ -198,13 +198,13 @@ func (c *APIClient) ReportNodeOnlineUsers(onlineUserList *[]api.OnlineUser) erro
 	var path string
 	switch c.NodeType {
 	case "V2ray":
-		path = "/api/v1/server/Deepbwork/onlinde"
+		path = "/api/v1/server/Deepbwork/onlinde2"
 	case "Vless":
-		path = "/api/v1/server/Deepbwork/onlinde"
+		path = "/api/v1/server/Deepbwork/onlinde2"
 	case "Trojan":
-		path = "/api/v1/server/TrojanTidalab/online"
+		path = "/api/v1/server/TrojanTidalab/online2"
 	case "Shadowsocks":
-		path = "/api/v1/server/ShadowsocksTidalab/online"
+		path = "/api/v1/server/ShadowsocksTidalab/online2"
 	default:
 		return nil, fmt.Errorf("unsupported Node type: %s", c.NodeType)
 	}
