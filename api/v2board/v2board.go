@@ -189,58 +189,7 @@ func (c *APIClient) GetNodeInfo() (nodeInfo *api.NodeInfo, err error) {
 	return nodeInfo, nil
 }
 
-
-// GetUserList will pull user form sspanel
-// GetUserList will pull user form sspanel
 func (c *APIClient) GetUserList() (UserList *[]api.UserInfo, err error) {
-	var path string
-	switch c.NodeType {
-	case "V2ray":
-		path = "/api/v1/server/Deepbwork/user"
-	case "Trojan":
-		path = "/api/v1/server/TrojanTidalab/user"
-	case "Shadowsocks":
-		path = "/api/v1/server/ShadowsocksTidalab/user"
-	default:
-		return nil, fmt.Errorf("unsupported Node type: %s", c.NodeType)
-	}
-	res, err := c.client.R().
-		ForceContentType("application/json").
-		Get(path)
-
-	response, err := c.parseResponse(res, path, err)
-	if err != nil {
-		return nil, err
-	}
-	numOfUsers := len(response.Get("data").MustArray())
-	userList := make([]api.UserInfo, numOfUsers)
-	for i := 0; i < numOfUsers; i++ {
-		user := api.UserInfo{}
-		user.UID = response.Get("data").GetIndex(i).Get("id").MustInt()
-
-		user.DeviceLimit = c.DeviceLimit
-		switch c.NodeType {
-		case "Shadowsocks":
-			user.Email = response.Get("data").GetIndex(i).Get("secret").MustString()
-			user.Passwd = response.Get("data").GetIndex(i).Get("secret").MustString()
-			user.Method = response.Get("data").GetIndex(i).Get("cipher").MustString()
-			user.Port = uint32(response.Get("data").GetIndex(i).Get("port").MustUint64())
-		case "Trojan":
-			user.UUID = response.Get("data").GetIndex(i).Get("trojan_user").Get("password").MustString()
-			user.Email = response.Get("data").GetIndex(i).Get("trojan_user").Get("password").MustString()
-		case "V2ray":
-			user.UUID = response.Get("data").GetIndex(i).Get("v2ray_user").Get("uuid").MustString()
-			user.Email = response.Get("data").GetIndex(i).Get("v2ray_user").Get("email").MustString()
-			user.AlterID = uint16(response.Get("data").GetIndex(i).Get("v2ray_user").Get("alter_id").MustUint64())
-			if c.SpeedLimit >0 {
-				user.SpeedLimit = uint64(c.SpeedLimit * 1000000 / 8)
-			}
-			else {
-				user.SpeedLimit = uint64(response.Get("data").GetIndex(i).Get("speed_limit").Mustfloat64() * 1000000 / 8)
-			}
-		}
-		userList[i] = user
-	}
 	return &userList, nil
 }
 
