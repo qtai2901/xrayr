@@ -244,32 +244,42 @@ func (c *APIClient) GetUserList() (UserList *[]api.UserInfo, err error) {
 
 // ReportNodeOnlineUsers reports online user ip
 func (c *APIClient) ReportNodeOnlineUsers(onlineUserList *[]api.OnlineUser) error {
+	c.access.Lock()
+	defer c.access.Unlock()
+
+	reportOnline := make(map[int]int)
+	data := make([]OnlineUser, len(*onlineUserList))
+	for i, user := range *onlineUserList {
+		data[i] = OnlineUser{UID: user.UID, IP: user.IP}
+		if _, ok := reportOnline[user.UID]; ok {
+			reportOnline[user.UID]++
+		} else {
+			reportOnline[user.UID] = 1
+		}
+	}
+	c.LastReportOnline = reportOnline // Update LastReportOnline
+
+	postData := &PostData{Data: data}
+
 	var path string
 	switch c.NodeType {
 	case "V2ray":
-		path = "/api/v1/server/Deepbwork/onlinde"
-	case "Vless":
-		path = "/api/v1/server/Deepbwork/onlinde"
+		path = "/api/v1/server/Deepbwork/config"
 	case "Trojan":
 		path = "/api/v1/server/TrojanTidalab/online"
 	case "Shadowsocks":
 		path = "/api/v1/server/ShadowsocksTidalab/online"
 	default:
-		return nil, fmt.Errorf("unsupported Node type: %s", c.NodeType)
+		return errors.New("unsupported NodeType")
 	}
-	data := make([]OnlineUser, len(*onlineUserList))
-	for i, user := range *onlineUserList {
-		data[i] = OnlineUser{UID: user.UID, IP: user.IP}
-	}
-	postData := &PostData{Type: nodeType, NodeId: c.NodeID, Onlines: data}
-	
 
 	res, err := c.client.R().
-		SetHeader("Content-Type", "application/json").
+		SetQueryParam("node_id", strconv.Itoa(c.NodeID)).
 		SetBody(postData).
 		SetResult(&Response{}).
 		ForceContentType("application/json").
 		Post(path)
+
 	_, err = c.parseResponse(res, path, err)
 	if err != nil {
 		return err
@@ -277,6 +287,7 @@ func (c *APIClient) ReportNodeOnlineUsers(onlineUserList *[]api.OnlineUser) erro
 
 	return nil
 }
+
 // ReportUserTraffic reports the user traffic
 func (c *APIClient) ReportUserTraffic(userTraffic *[]api.UserTraffic) error {
 	var path string
